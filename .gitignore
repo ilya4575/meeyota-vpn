@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Кэш скачанных источников (объёмный, не нужен в git)
+data/cache/
+
+# Одноразовые incy://import-ссылки (содержимое подписок в base64)
+data/incy-import-links.txt
+
+# Служебное
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.tmp
+.singbox/

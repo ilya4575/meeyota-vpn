@@ -1,0 +1,158 @@
+{
+  "generated_at": "2026-09-12T17:48:18Z",
+  "aborted": null,
+  "sources": [
+    {
+      "id": "flat447-v2ray-lists",
+      "name": "FLAT447/v2ray-lists",
+      "type": "github",
+      "status": "ok",
+      "error": null,
+      "files": [
+        {
+          "path": "WHITE_FULL.txt",
+          "lines": 241,
+          "configs": 234,
+          "invalid": 2
+        },
+        {
+          "path": "BLACK_FULL.txt",
+          "lines": 123,
+          "configs": 118,
+          "invalid": 0
+        }
+      ],
+      "configs": 352,
+      "invalid": 2
+    },
+    {
+      "id": "hiztin-vless-po-gribi",
+      "name": "hiztin/VLESS-PO-GRIBI",
+      "type": "github",
+      "status": "ok",
+      "error": null,
+      "files": [
+        {
+          "path": "deploy/sub.txt",
+          "lines": 4177,
+          "configs": 4012,
+          "invalid": 165
+        }
+      ],
+      "configs": 4012,
+      "invalid": 165
+    },
+    {
+      "id": "goida-vpn-configs",
+      "name": "AvenCores/goida-vpn-configs",
+      "type": "github",
+      "status": "ok",
+      "error": null,
+      "files": [
+        {
+          "path": "githubmirror/1.txt",
+          "lines": 10703,
+          "configs": 10345,
+          "invalid": 358
+        },
+        {
+          "path": "githubmirror/6.txt",
+          "lines": 143,
+          "configs": 143,
+          "invalid": 0
+        },
+        {
+          "path": "githubmirror/22.txt",
+          "lines": 401,
+          "configs": 399,
+          "invalid": 2
+        },
+        {
+          "path": "githubmirror/23.txt",
+          "lines": 157,
+          "configs": 157,
+          "invalid": 0
+        },
+        {
+          "path": "githubmirror/24.txt",
+          "lines": 787,
+          "configs": 774,
+          "invalid": 13
+        },
+        {
+          "path": "githubmirror/25.txt",
+          "lines": 258,
+          "configs": 258,
+          "invalid": 0
+        }
+      ],
+      "configs": 12076,
+      "invalid": 373
+    },
+    {
+      "id": "igareck-vpn-configs-for-russia",
+      "name": "igareck/vpn-configs-for-russia",
+      "type": "github",
+      "status": "ok",
+      "error": null,
+      "files": [
+        {
+          "path": "BLACK_VLESS_RUS.txt",
+          "lines": 140,
+          "configs": 134,
+          "invalid": 0
+        },
+        {
+          "path": "BLACK_SS+All_RUS.txt",
+          "lines": 112,
+          "configs": 98,
+          "invalid": 0
+        },
+        {
+          "path": "BLACK_VLESS_RUS_mobile.txt",
+          "lines": 125,
+          "configs": 119,
+          "invalid": 0
+        },
+        {
+          "path": "BLACK_SS_WEAK_DPI_RUS.txt",
+          "lines": 24,
+          "configs": 8,
+          "invalid": 0
+        },
+        {
+          "path": "Vless-Reality-White-Lists-Rus-Mobile.txt",
+          "lines": 73,
+          "configs": 67,
+          "invalid": 0
+        }
+      ],
+      "configs": 426,
+      "invalid": 0
+    },
+    {
+      "id": "whoahaow-rjsxrd",
+      "name": "whoahaow/rjsxrd",
+      "type": "github",
+      "status": "ok",
+      "error": null,
+      "files": [
+        {
+          "path": "githubmirror/bypass/bypass-all.txt",
+          "lines": 485,
+          "configs": 473,
+          "invalid": 5
+        }
+      ],
+      "configs": 473,
+      "invalid": 5
+    }
+  ],
+  "found": 17339,
+  "invalid": 545,
+  "unique": 12424,
+  "duplicates": 4915,
+  "whitelist": 12424,
+  "wifi": 0,
+  "checks": null
+}
