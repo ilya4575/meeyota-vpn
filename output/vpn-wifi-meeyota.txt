@@ -1,0 +1,8 @@
+#profile-title: VPN Wi-fi meeyota
+#profile-update-interval: 6
+#profile-web-page-url: https://ilya4575.github.io/meeyota-vpn
+#support-url: https://github.com/ilya4575/meeyota-vpn
+#announce: 0 проверенных серверов · внешний IP вне РФ (IPv4/IPv6) · обновляется каждые 6 ч
+# Date/Time: 2026-09-12 / 17:48 (UTC)
+# Количество: 0
+

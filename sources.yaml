@@ -1,0 +1,135 @@
+# ============================================================================
+# meeyota-vpn — конфигурация источников
+#
+# Добавление нового источника = добавление блока в список `sources`.
+# Код менять не нужно.
+#
+# Поддерживаемые типы источника:
+#   type: github — репозиторий GitHub (repo + branch + files)
+#   type: url    — произвольный HTTPS-URL (поле path в files = полный URL)
+#
+# Путь к файлу в `github`-источнике — относительно корня репозитория.
+# Опционально у файла можно задать max_size_mb (переопределяет глобальный лимит).
+# ============================================================================
+version: 1
+
+settings:
+  timeout: 30                # таймаут HTTP-запроса, секунд
+  retries: 3                 # число повторных попыток на файл
+  backoff: 2.0               # множитель задержки между повторами (сек)
+  max_file_size_mb: 25       # глобальный лимит размера файла
+  use_api_fallback: true     # если raw.githubusercontent.com недоступен — использовать GitHub API
+  cache_dir: data/cache      # кэш скачанных файлов и ETag
+
+pages:
+  # Значения подставляются в README и в ссылки incy://add/...
+  # (можно переопределить переменной окружения PAGES_USERNAME / PAGES_REPOSITORY)
+  username: ilya4575
+  repository: meeyota-vpn
+
+safety:
+  min_configs: 50            # меньше N конфигов — подписка НЕ перезаписывается
+  max_drop_ratio: 0.5        # не републиковать, если новый список потерял больше 50% от старого
+
+checks:
+  workers: 10                # параллельные проверки (для VPN Wi-fi)
+  minutes: 110               # бюджет времени на проверки за один запуск
+  ttl_days: 3                # повторная проверка сервера через N дней
+  geo_ttl_days: 7            # срок жизни результата геолокации IP
+  geo_cache_max: 20000       # максимум IP в кэше геолокации
+  results_max_groups: 6000   # максимум серверов в data/check_results.json
+  results_max_configs: 20000 # максимум конфигов в data/check_results.json
+
+update_interval_hours: 6     # указывается в заголовке подписки (#profile-update-interval)
+
+sources:
+  # ------------------------------------------------------------------
+  # 1. FLAT447/v2ray-lists — «Основные подписки» (корневые файлы с URI)
+  #    WHITE_FULL.txt — белый список (VLESS, SS, Hysteria2)
+  #    BLACK_FULL.txt — полный список (VLESS, Hysteria2, SS)
+  # ------------------------------------------------------------------
+  - id: flat447-v2ray-lists
+    name: "FLAT447/v2ray-lists"
+    type: github
+    repo: FLAT447/v2ray-lists
+    branch: main
+    files:
+      - WHITE_FULL.txt
+      - BLACK_FULL.txt
+
+  # ------------------------------------------------------------------
+  # 2. hiztin/VLESS-PO-GRIBI — объединённая подписка deploy/sub.txt
+  #    (VLESS, Shadowsocks, VMess)
+  # ------------------------------------------------------------------
+  - id: hiztin-vless-po-gribi
+    name: "hiztin/VLESS-PO-GRIBI"
+    type: github
+    repo: hiztin/VLESS-PO-GRIBI
+    branch: main
+    files:
+      - deploy/sub.txt
+
+  # ------------------------------------------------------------------
+  # 3. AvenCores/goida-vpn-configs — рекомендованные в README зеркала
+  #    (1, 6, 22, 23, 24, 25). Файлы 2.txt (~100 МБ) и 21.txt (~20 МБ)
+  #    намеренно не включены из-за размера.
+  # ------------------------------------------------------------------
+  - id: goida-vpn-configs
+    name: "AvenCores/goida-vpn-configs"
+    type: github
+    repo: AvenCores/goida-vpn-configs
+    branch: main
+    files:
+      - githubmirror/1.txt
+      - githubmirror/6.txt
+      - githubmirror/22.txt
+      - githubmirror/23.txt
+      - githubmirror/24.txt
+      - githubmirror/25.txt
+
+  # ------------------------------------------------------------------
+  # 4. igareck/vpn-configs-for-russia — файлы подписок в корне репозитория
+  # ------------------------------------------------------------------
+  - id: igareck-vpn-configs-for-russia
+    name: "igareck/vpn-configs-for-russia"
+    type: github
+    repo: igareck/vpn-configs-for-russia
+    branch: main
+    files:
+      - BLACK_VLESS_RUS.txt
+      - BLACK_SS+All_RUS.txt
+      - BLACK_VLESS_RUS_mobile.txt
+      - BLACK_SS_WEAK_DPI_RUS.txt
+      - Vless-Reality-White-Lists-Rus-Mobile.txt
+
+  # ------------------------------------------------------------------
+  # 5. whoahaow/rjsxrd — зеркало обходных (bypass) списков
+  # ------------------------------------------------------------------
+  - id: whoahaow-rjsxrd
+    name: "whoahaow/rjsxrd"
+    type: github
+    repo: whoahaow/rjsxrd
+    branch: main
+    files:
+      - githubmirror/bypass/bypass-all.txt
+
+  # ------------------------------------------------------------------
+  # Пример добавления нового источника (раскомментируйте и заполните):
+  #
+  # - id: my-new-source
+  #   name: "owner/repo"
+  #   type: github
+  #   repo: owner/repo
+  #   branch: main
+  #   files:
+  #     - path: subscriptions/all.txt
+  #       max_size_mb: 10
+  #
+  # Пример произвольного URL:
+  #
+  # - id: my-raw-url
+  #   name: "my-raw-url"
+  #   type: url
+  #   files:
+  #     - https://example.com/subscription.txt
+  # ------------------------------------------------------------------
