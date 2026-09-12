@@ -1,0 +1,6 @@
+# meeyota-vpn — зависимости (Python 3.9+)
+requests>=2.31,<3
+PyYAML>=6.0,<7
+
+# dev/CI
+pytest>=8.0

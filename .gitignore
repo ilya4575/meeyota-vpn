@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# meeyota-vpn: кэш и бинарники (НЕ коммитим)
+data/bin/
+data/cache/
+data/xray-tmp/
+
+# артефакты
+*.tmp
+*.log
+
+# отслеживаемые (коммитятся как состояние для фолбэков/проверок):
+#   data/configs.json
+#   data/checks.json
+#   data/stats.json
+#   output/*.txt

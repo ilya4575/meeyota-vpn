@@ -1,0 +1,178 @@
+# ============================================================================
+# meeyota-vpn — источники подписок
+# ============================================================================
+# Добавление нового источника — БЕЗ изменения Python-кода:
+#
+#   - id:       уникальный идентификатор (латиницей, без пробелов)
+#   - name:     человекочитаемое имя (попадёт в data/configs.json)
+#   - url:      прямой URL файла (raw.githubusercontent.com / любая ссылка)
+#   - enabled:  true/false — временное отключение без удаления
+#   - timeout / retries / retry_delay / max_bytes — опционально, переопределяют defaults
+#   - note:     комментарий (откуда источник)
+#
+# Форматы файлов: текст с URI по одному на строку; целое содержимое в base64;
+# строки, начинающиеся с '#', — комментарии (пропускаются).
+# Пути ниже проверены по актуальной структуре репозиториев (2026-09-12).
+# ============================================================================
+
+defaults:
+  timeout: 30
+  retries: 3
+  retry_delay: 5
+  max_bytes: 25000000        # 25 МБ — защита от гигантских файлов
+  user_agent: "meeyota-vpn-aggregator/1.0 (github)"
+  cache_ttl_days: 14         # срок жизни кэша источника при сбое live-fetch
+
+sources:
+
+  # ── FLAT447/v2ray-lists (ветка main) ──────────────────────────────────────
+  - id: flat447-white-full
+    name: FLAT447/v2ray-lists · WHITE_FULL
+    url: https://raw.githubusercontent.com/FLAT447/v2ray-lists/main/WHITE_FULL.txt
+    note: «белые списки» — конфигурации, обходящие блокировки по SNI/CIDR
+
+  - id: flat447-black-full
+    name: FLAT447/v2ray-lists · BLACK_FULL
+    url: https://raw.githubusercontent.com/FLAT447/v2ray-lists/main/BLACK_FULL.txt
+    note: смешанный список (vless reality, ss, hy2, ...)
+
+  - id: flat447-base64-white
+    name: FLAT447/v2ray-lists · BASE64/WHITE_FULL
+    url: https://raw.githubusercontent.com/FLAT447/v2ray-lists/main/BASE64/WHITE_FULL.txt
+    note: то же содержимое в base64 (проверка декодера; дубликаты уходят в дедуп)
+
+  - id: flat447-mtproxy
+    name: FLAT447/v2ray-lists · MTProxy
+    url: https://raw.githubusercontent.com/FLAT447/v2ray-lists/main/blacklist.txt
+    note: t.me/proxy (MTProto); в whitelist попадает, в wifi не проверяется
+
+  # ── hiztin/VLESS-PO-GRIBI (ветка main) ────────────────────────────────────
+  - id: hiztin-sub
+    name: hiztin/VLESS-PO-GRIBI · deploy/sub.txt
+    url: https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/sub.txt
+    note: основная подписка (ss + vless)
+
+  - id: hiztin-sub-b64
+    name: hiztin/VLESS-PO-GRIBI · deploy/sub_base64.txt
+    url: https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/sub_base64.txt
+    note: base64-вариант (vless/vmess)
+
+  # ── AvenCores/goida-vpn-configs (ветка main) ──────────────────────────────
+  # githubmirror/N.txt — зеркала различных upstream-подписок, plain URI-строки.
+  # 2.txt (~100 МБ) и 21.txt (~20 МБ) — с ограничением max_bytes.
+  - id: avencores-1
+    name: AvenCores/goida-vpn-configs · githubmirror/1.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/1.txt
+  - id: avencores-2
+    name: AvenCores/goida-vpn-configs · githubmirror/2.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/2.txt
+    max_bytes: 8000000      # файл ~100 МБ — берём первую часть
+  - id: avencores-3
+    name: AvenCores/goida-vpn-configs · githubmirror/3.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/3.txt
+  - id: avencores-4
+    name: AvenCores/goida-vpn-configs · githubmirror/4.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/4.txt
+  - id: avencores-5
+    name: AvenCores/goida-vpn-configs · githubmirror/5.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/5.txt
+  - id: avencores-6
+    name: AvenCores/goida-vpn-configs · githubmirror/6.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/6.txt
+  - id: avencores-7
+    name: AvenCores/goida-vpn-configs · githubmirror/7.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/7.txt
+  - id: avencores-8
+    name: AvenCores/goida-vpn-configs · githubmirror/8.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/8.txt
+  - id: avencores-9
+    name: AvenCores/goida-vpn-configs · githubmirror/9.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/9.txt
+  - id: avencores-10
+    name: AvenCores/goida-vpn-configs · githubmirror/10.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/10.txt
+  - id: avencores-11
+    name: AvenCores/goida-vpn-configs · githubmirror/11.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/11.txt
+  - id: avencores-12
+    name: AvenCores/goida-vpn-configs · githubmirror/12.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/12.txt
+  - id: avencores-13
+    name: AvenCores/goida-vpn-configs · githubmirror/13.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/13.txt
+  - id: avencores-14
+    name: AvenCores/goida-vpn-configs · githubmirror/14.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/14.txt
+  - id: avencores-15
+    name: AvenCores/goida-vpn-configs · githubmirror/15.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/15.txt
+  - id: avencores-16
+    name: AvenCores/goida-vpn-configs · githubmirror/16.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/16.txt
+  - id: avencores-17
+    name: AvenCores/goida-vpn-configs · githubmirror/17.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/17.txt
+  - id: avencores-18
+    name: AvenCores/goida-vpn-configs · githubmirror/18.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/18.txt
+  - id: avencores-19
+    name: AvenCores/goida-vpn-configs · githubmirror/19.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/19.txt
+  - id: avencores-20
+    name: AvenCores/goida-vpn-configs · githubmirror/20.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/20.txt
+  - id: avencores-21
+    name: AvenCores/goida-vpn-configs · githubmirror/21.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/21.txt
+    max_bytes: 21000000
+  - id: avencores-22
+    name: AvenCores/goida-vpn-configs · githubmirror/22.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/22.txt
+  - id: avencores-23
+    name: AvenCores/goida-vpn-configs · githubmirror/23.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/23.txt
+  - id: avencores-24
+    name: AvenCores/goida-vpn-configs · githubmirror/24.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/24.txt
+  - id: avencores-25
+    name: AvenCores/goida-vpn-configs · githubmirror/25.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/25.txt
+  - id: avencores-26
+    name: AvenCores/goida-vpn-configs · githubmirror/26.txt
+    url: https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/26.txt
+
+  # ── igareck/vpn-configs-for-russia (ветка main) ───────────────────────────
+  - id: igareck-black-ss-all
+    name: igareck/vpn-configs-for-russia · BLACK_SS+All_RUS
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_SS+All_RUS.txt
+    note: ss/hy2/vmess/trojan
+  - id: igareck-black-vless
+    name: igareck/vpn-configs-for-russia · BLACK_VLESS_RUS
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS.txt
+  - id: igareck-black-vless-mobile
+    name: igareck/vpn-configs-for-russia · BLACK_VLESS_RUS_mobile
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS_mobile.txt
+  - id: igareck-black-ss-weak-dpi
+    name: igareck/vpn-configs-for-russia · BLACK_SS_WEAK_DPI_RUS
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_SS_WEAK_DPI_RUS.txt
+  - id: igareck-vless-reality-mobile
+    name: igareck/vpn-configs-for-russia · Vless-Reality-White-Lists-Rus-Mobile
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/Vless-Reality-White-Lists-Rus-Mobile.txt
+  - id: igareck-white-cidr-all
+    name: igareck/vpn-configs-for-russia · WHITE-CIDR-RU-all
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-CIDR-RU-all.txt
+  - id: igareck-white-cidr-checked
+    name: igareck/vpn-configs-for-russia · WHITE-CIDR-RU-checked
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-CIDR-RU-checked.txt
+  - id: igareck-white-sni-all
+    name: igareck/vpn-configs-for-russia · WHITE-SNI-RU-all
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-SNI-RU-all.txt
+
+  # ── whoahaow/rjsxrd (ветка main) ──────────────────────────────────────────
+  - id: rjsxrd-bypass-all
+    name: whoahaow/rjsxrd · bypass-all
+    url: https://raw.githubusercontent.com/whoahaow/rjsxrd/main/githubmirror/bypass/bypass-all.txt
+    note: ss + vless (обход белых списков)
+  - id: rjsxrd-bypass-unsecure
+    name: whoahaow/rjsxrd · bypass-unsecure-all
+    url: https://raw.githubusercontent.com/whoahaow/rjsxrd/main/githubmirror/bypass-unsecure/bypass-unsecure-all.txt
