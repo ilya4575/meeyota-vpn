@@ -2,18 +2,23 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
+
+# Данные пайплайна
+data/cache/
+data/check_results.json
+data/configs.json
+data/stats.json
+data/proxy_urls.txt
+
+# Окружение
 .venv/
 venv/
 
-# Кэш скачанных источников (объёмный, не нужен в git)
-data/cache/
+# IDE
+.vscode/
+.idea/
+.DS_Store
 
-# Одноразовые incy://import-ссылки (содержимое подписок в base64)
-data/incy-import-links.txt
-
-# Служебное
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-*.tmp
-.singbox/
+# Логи
+*.log

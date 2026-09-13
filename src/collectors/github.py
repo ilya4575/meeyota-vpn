@@ -1,208 +1,134 @@
-"""Скачивание файлов-источников.
-
-* Основной путь — ``https://raw.githubusercontent.com/{repo}/{branch}/{path}``.
-* Fallback (если raw недоступен) — GitHub REST API (``/contents`` или
-  ``/git/blobs`` для файлов больше 1 МБ).
-* Повторные попытки с экспоненциальной задержкой, таймаут, лимит размера.
-* Кэш файлов и ETag: при повторном запуске без изменений файл не
-  скачивается повторно (HTTP 304).
-"""
+"""Коллектор: скачивание файлов из GitHub (raw + API fallback)."""
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import json
-import logging
+import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from urllib.parse import quote
+from typing import Iterable
 
 import requests
 
-log = logging.getLogger(__name__)
 
-_API_BASE = "https://api.github.com"
-_RAW_BASE = "https://raw.githubusercontent.com"
-
-
-class SourceError(Exception):
-    """Источниковый файл недоступен / повреждён / слишком велик."""
-
-
-class SourceNotFound(SourceError):
-    """Файл отсутствует (404) — retry/fallback бессмысленны."""
+@dataclass
+class DownloadResult:
+    source_id: str
+    file_path: str
+    content: bytes
+    from_cache: bool
+    duration_ms: int
+    error: str | None = None
 
 
-class SourceTooLarge(SourceError):
-    """Файл превышает лимит размера — источник отклонён целенаправленно."""
+class GithubCollector:
+    """Скачивает файлы из GitHub с retry, ETag-кэшем и API fallback."""
 
-
-class Collector:
-    def __init__(self, settings: Any, root: Path | None = None):
-        self.settings = settings
-        self.root = Path(root) if root else Path(".")
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "meeyota-vpn-aggregator/1.0"})
-        self.cache_dir = self.root / settings.cache_dir / "files"
-        self.etag_path = self.root / settings.cache_dir / "etags.json"
+    def __init__(
+        self,
+        cache_dir: Path,
+        timeout: int = 30,
+        retries: int = 3,
+        backoff: float = 2.0,
+        max_file_size_mb: int = 25,
+        user_agent: str = "meeyota-vpn/1.0",
+        use_api_fallback: bool = True,
+        github_token: str | None = None,
+    ):
+        self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.etags: dict[str, str] = self._load_json(self.etag_path, default={})
+        self.timeout = timeout
+        self.retries = retries
+        self.backoff = backoff
+        self.max_bytes = max_file_size_mb * 1024 * 1024
+        self.user_agent = user_agent
+        self.use_api_fallback = use_api_fallback
+        self.github_token = github_token or os.environ.get("GITHUB_TOKEN", "")
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": user_agent})
 
-    # ------------------------------------------------------------------
-    # Публичный API
-    # ------------------------------------------------------------------
+    def _cache_path(self, source_id: str, file_path: str) -> Path:
+        key = hashlib.sha256(f"{source_id}::{file_path}".encode()).hexdigest()[:16]
+        return self.cache_dir / f"{key}-{Path(file_path).name}"
 
-    def fetch_github(self, repo: str, branch: str, path: str, max_size_mb: float | None = None) -> str:
-        """Скачивает файл из GitHub-репозитория (raw → API fallback)."""
-        raw_url = f"{_RAW_BASE}/{repo}/{branch}/{quote(path, safe='/')}"
-        cache_file = self._cache_file(raw_url)
-        etag = self.etags.get(raw_url)
-
-        try:
-            text, new_etag = self._http_get(raw_url, etag=etag, max_size_mb=max_size_mb)
-            if text is None:  # 304 Not Modified
-                if cache_file.exists():
-                    log.info("304 Not Modified (использован кэш): %s", raw_url)
-                    return cache_file.read_text(encoding="utf-8")
-                raise SourceError("получен 304, но кэш отсутствует")
-            cache_file.write_text(text, encoding="utf-8")
-            if new_etag:
-                self.etags[raw_url] = new_etag
-                self._save_etags()
-            return text
-        except (SourceNotFound, SourceTooLarge):
-            # фатальные: нет смысла пробовать API
-            raise
-        except SourceError as e:
-            if not self.settings.use_api_fallback:
-                raise
-            log.warning("raw недоступен (%s) — пробую GitHub API: %s", e, raw_url)
-
-        text = self._fetch_via_api(repo, branch, path, max_size_mb=max_size_mb)
-        cache_file.write_text(text, encoding="utf-8")
-        return text
-
-    def fetch_url(self, url: str, max_size_mb: float | None = None) -> str:
-        """Скачивает произвольный HTTPS-URL."""
-        if not url.lower().startswith(("http://", "https://")):
-            raise SourceError(f"некорректный URL: {url!r}")
-        cache_file = self._cache_file(url)
-        etag = self.etags.get(url)
-        text, new_etag = self._http_get(url, etag=etag, max_size_mb=max_size_mb)
-        if text is None:
-            if cache_file.exists():
-                log.info("304 Not Modified (использован кэш): %s", url)
-                return cache_file.read_text(encoding="utf-8")
-            raise SourceError("получен 304, но кэш отсутствует")
-        cache_file.write_text(text, encoding="utf-8")
-        if new_etag:
-            self.etags[url] = new_etag
-            self._save_etags()
-        return text
-
-    # ------------------------------------------------------------------
-    # Внутреннее
-    # ------------------------------------------------------------------
-
-    def _cache_file(self, url: str) -> Path:
-        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
-        return self.cache_dir / f"{digest}.txt"
-
-    def _http_get(
-        self, url: str, etag: str | None = None, max_size_mb: float | None = None
-    ) -> tuple[str | None, str | None]:
-        """GET с ретраями. Возвращает (text|None-при-304, etag)."""
-        limit = (max_size_mb or self.settings.max_file_size_mb) * 1024 * 1024
-        last_err: str = "unknown"
-        for attempt in range(1, self.settings.retries + 1):
-            headers = {"If-None-Match": etag} if etag else {}
-            try:
-                with self.session.get(
-                    url, headers=headers, timeout=self.settings.timeout, stream=True
-                ) as r:
-                    if r.status_code == 304:
-                        return None, etag
-                    if r.status_code == 200:
-                        chunks: list[bytes] = []
-                        size = 0
-                        for chunk in r.iter_content(65536):
-                            size += len(chunk)
-                            if size > limit:
-                                raise SourceTooLarge(
-                                    f"файл больше лимита {max_size_mb or self.settings.max_file_size_mb} МБ"
-                                )
-                            chunks.append(chunk)
-                        new_etag = r.headers.get("ETag")
-                        return b"".join(chunks).decode("utf-8", "replace"), new_etag
-                    if r.status_code == 404:
-                        raise SourceNotFound("HTTP 404: файл не найден")
-                    last_err = f"HTTP {r.status_code}"
-            except SourceError:
-                raise
-            except requests.RequestException as e:
-                last_err = f"{type(e).__name__}: {e}"
-            if attempt < self.settings.retries:
-                delay = self.settings.backoff ** attempt
-                log.warning(
-                    "повтор %d/%d через %.1f с — %s (%s)",
-                    attempt, self.settings.retries, delay, url, last_err,
+    def _download_raw(self, repo: str, branch: str, file_path: str) -> tuple[bytes, str | None]:
+        url = f"https://raw.githubusercontent.com/{repo}/{branch}/{file_path}"
+        headers: dict = {}
+        etag_path = self._cache_path(f"etag::{repo}", file_path)
+        if etag_path.exists():
+            headers["If-None-Match"] = etag_path.read_text().strip()
+        r = self.session.get(url, headers=headers, timeout=self.timeout, stream=True)
+        if r.status_code == 304:
+            # not modified — отдаём кэш
+            cached = self._cache_path(repo, file_path)
+            if cached.exists():
+                return cached.read_bytes(), "etag"
+            # нет кэша — попробуем ещё раз без etag
+            r = self.session.get(url, timeout=self.timeout, stream=True)
+        r.raise_for_status()
+        if "etag" in r.headers:
+            etag_path.write_text(r.headers["etag"])
+        # читаем с лимитом
+        buf = bytearray()
+        for chunk in r.iter_content(chunk_size=65536):
+            buf.extend(chunk)
+            if len(buf) > self.max_bytes:
+                raise ValueError(
+                    f"file {file_path!r} exceeds max size {self.max_bytes} bytes"
                 )
-                time.sleep(delay)
-        raise SourceError(f"недоступен после {self.settings.retries} попыток: {url} ({last_err})")
+        return bytes(buf), None
 
-    def _fetch_via_api(self, repo: str, branch: str, path: str, max_size_mb: float | None = None) -> str:
-        limit = (max_size_mb or self.settings.max_file_size_mb) * 1024 * 1024
-        contents_url = f"{_API_BASE}/repos/{repo}/contents/{quote(path, safe='/')}?ref={branch}"
-        last_err = "unknown"
-        for attempt in range(1, self.settings.retries + 1):
+    def _download_api(self, repo: str, branch: str, file_path: str) -> bytes:
+        """Fallback: GitHub API с base64."""
+        url = f"https://api.github.com/repos/{repo}/contents/{file_path}?ref={branch}"
+        headers = {"Accept": "application/vnd.github.raw+json"}
+        if self.github_token:
+            headers["Authorization"] = f"Bearer {self.github_token}"
+        r = self.session.get(url, headers=headers, timeout=self.timeout)
+        r.raise_for_status()
+        return r.content[: self.max_bytes]
+
+    def download(self, source_id: str, repo: str, branch: str, file_path: str) -> DownloadResult:
+        started = time.monotonic()
+        cache_path = self._cache_path(source_id, file_path)
+        last_error: str | None = None
+        for attempt in range(1, self.retries + 1):
             try:
-                r = self.session.get(contents_url, timeout=self.settings.timeout)
-            except requests.RequestException as e:
-                r = None
-                last_err = str(e)
-            if r is not None:
-                if r.status_code == 200:
-                    d = r.json()
-                    if d.get("content"):
-                        data = base64.b64decode(d["content"]).decode("utf-8", "replace")
-                        if len(data.encode("utf-8")) > limit:
-                            raise SourceError("файл больше лимита (API)")
-                        return data
-                    # файл > 1 МБ: contents API не возвращает содержимое
-                    blob_url = f"{_API_BASE}/repos/{repo}/git/blobs/{d['sha']}"
-                    try:
-                        br = self.session.get(blob_url, timeout=max(120, self.settings.timeout * 4))
-                        if br.status_code == 200:
-                            data = base64.b64decode(br.json()["content"]).decode("utf-8", "replace")
-                            return data
-                        last_err = f"blobs HTTP {br.status_code}"
-                    except requests.RequestException as e:
-                        last_err = str(e)
-                elif r.status_code == 404:
-                    raise SourceNotFound(f"HTTP 404 (API): {path}")
-                else:
-                    last_err = f"HTTP {r.status_code}"
-            if attempt < self.settings.retries:
-                delay = self.settings.backoff ** attempt
-                time.sleep(delay)
-        raise SourceError(f"GitHub API недоступен: {path} ({last_err})")
+                content, from_cache_reason = self._download_raw(repo, branch, file_path)
+                if not from_cache_reason:
+                    cache_path.write_bytes(content)
+                return DownloadResult(
+                    source_id=source_id,
+                    file_path=file_path,
+                    content=content,
+                    from_cache=bool(from_cache_reason),
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
+                if attempt < self.retries:
+                    time.sleep(self.backoff ** attempt)
+        # raw не сработал — пробуем API fallback
+        if self.use_api_fallback:
+            try:
+                content = self._download_api(repo, branch, file_path)
+                cache_path.write_bytes(content)
+                return DownloadResult(
+                    source_id=source_id,
+                    file_path=file_path,
+                    content=content,
+                    from_cache=False,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+            except Exception as e:
+                last_error = f"raw={last_error}; api={type(e).__name__}: {e}"
 
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _load_json(path: Path, default: Any) -> Any:
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return default
-
-    def _save_etags(self) -> None:
-        try:
-            self.etag_path.parent.mkdir(parents=True, exist_ok=True)
-            self.etag_path.write_text(
-                json.dumps(self.etags, ensure_ascii=False, indent=0), encoding="utf-8"
-            )
-        except OSError as e:
-            log.warning("не удалось сохранить ETag-кэш: %s", e)
+        return DownloadResult(
+            source_id=source_id,
+            file_path=file_path,
+            content=b"",
+            from_cache=False,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            error=last_error,
+        )

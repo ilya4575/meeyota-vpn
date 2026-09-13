@@ -1,294 +1,277 @@
 # meeyota-vpn
 
-Агрегатор публичных VPN-конфигураций из GitHub-репозиториев. Собирает,
-нормализует и дедуплицирует конфигурации, затем публикует **две** подписки
-через GitHub Pages:
+Агрегатор публичных VPN-конфигураций из GitHub-репозиториев.
 
-* **VPN whitelist meeyota** — объединённый белый список всех валидных
-  конфигураций из всех источников;
-* **VPN Wi-fi meeyota** — строгий подмножество: только серверы, чей
-  **фактический внешний IP (IPv4 и IPv6) не определяется как Российская
-  Федерация** (проверка реальным соединением + геолокация).
+Собирает, нормализует, дедуплицирует и проверяет конфигурации, затем
+публикует **ровно два профиля** через GitHub Pages:
 
-Вся инфраструктура — GitHub Actions + GitHub Pages. **Без VPS, без Docker,
-без базы данных.**
+| Профиль | Назначение |
+|---|---|
+| **VPN whitelist meeyota** | Объединённая подборка всех валидных конфигураций из всех источников |
+| **VPN Wi-fi meeyota** | Подмножество для Wi-Fi-сетей (только проверенные non-RU IP-узлы) |
 
-<!-- INCY-LINKS:BEGIN (автоматически генерируется — не редактировать) -->
+Каждый профиль — это **один full Xray JSON** для клиента **Incy**.
+Incy показывает его как **один сервер** в UI, а выбор рабочего узла
+происходит автоматически через Xray-core (`burstObservatory` +
+`routing.balancers` со стратегией `leastLoad`).
 
-## 🔗 Ссылки для импорта в Incy
-
-Основной (приоритетный) способ — `incy://add/{url}`: клиент сам обновляет
-подписку на стороне GitHub Pages, повторный импорт не нужен.
-
-**VPN whitelist meeyota** — vpn-whitelist-meeyota.txt
-
-`incy://add/https://ilya4575.github.io/meeyota-vpn/vpn-whitelist-meeyota.txt`
-
-**VPN Wi-fi meeyota** — vpn-wifi-meeyota.txt
-
-`incy://add/https://ilya4575.github.io/meeyota-vpn/vpn-wifi-meeyota.txt`
-
-Одноразовый импорт содержимого (`incy://import/{base64}`) формируется
-опционально командой `python -m src.main --import-link data/incy-import-links.txt`
-(используется, когда `incy://add/{url}` недоступен).
-
-<!-- INCY-LINKS:END -->
-
-> ⚠️ Ссылки выше актуальны для репозитория `ilya4575/meeyota-vpn`. При
-> переносе проекта в другой репозиторий измените секцию `pages` в
-> `sources.yaml` — блок обновится автоматически при следующем запуске.
-> До первого запуска workflow блок будет содержать `USERNAME`/`REPOSITORY`.
+Никаких 12 000 отдельных серверов. Никакого ручного перебора.
 
 ---
 
-## Как это работает
+## Результат после импорта в Incy
 
 ```
-GitHub Actions (каждые 6 ч / вручную)
-  │
-  ├─ 1. Скачивание файлов источников
-  │      (retry, timeout, ETag-кэш, лимит размера, GitHub API как fallback)
-  ├─ 2. Парсинг и нормализация URI
-  │      (VLESS, VMess, Trojan, Shadowsocks, SSR, Hysteria/Hysteria2, TUIC,
-  │       SOCKS5; base64-файлы и &amp;-сущности обрабатываются)
-  ├─ 3. Дедупликация (канонический хеш: сервер+порт+креды+транспорт)
-  ├─ 4. Проверки для «VPN Wi-fi» (sing-box):
-  │      реальное соединение → внешний IPv4 (+IPv6, если есть) →
-  │      геолокация (ipwho.is, fallback ip-api.com) → строгий вердикт
-  ├─ 5. Экспорт output/*.txt + data/*.json
-  │      (защита от обнуления: при аномальном падении списка подписки
-  │       НЕ перезаписываются)
-  ├─ 6. Коммит ТОЛЬКО если файлы изменились
-  └─ 7. Публикация output/ на GitHub Pages
+Подписка
+├── VPN whitelist meeyota       ← 1 запись
+└── VPN Wi-fi meeyota           ← 1 запись
 ```
 
-### Правила подписки «VPN Wi-fi meeyota» (строгие)
-
-1. устанавливается реальное соединение с конфигурацией (sing-box,
-   mixed-proxy на 127.0.0.1, прогонка трафика через прокси);
-2. определяется фактический внешний **IPv4**;
-3. при наличии выхода в IPv6 определяется и **IPv6**;
-4. страна каждого IP определяется через геолокационный API
-   (основной — `ipwho.is`, запасной — `ip-api.com`);
-5. если IPv4 **или** IPv6 определяется как `RU` — конфигурация **не
-   включается**;
-6. если IPv4 и IPv6 дают **разные** страны — конфликт, конфигурация
-   **не включается**;
-7. если страна не определяется (оба API молчат) — **не включается**
-   (нет подтверждения «вне РФ»);
-8. дата последней проверки (`last_check`) и результат (`country`, `ip`,
-   `verdict`) сохраняются в `data/check_results.json`,
-   `data/configs.json` и в комментариях над каждой строкой подписки.
-
-> **О геолокации.** Абсолютной гарантии нет: IP-базы могут ошибаться и
-> обновляются с задержкой. Поэтому используется максимально строгий отсев —
-> в подписку попадает только то, что при актуальной проверке явно
-> определено как вне РФ, а любые сомнения (конфликт, неизвестная страна,
-> сбой) исключают конфигурацию. Результаты кэшируются 3 дня
-> (`checks.ttl_days`), повторные проверки — по расписанию.
+Внутри каждой записи — пул из N собранных конфигураций (`proxy-1`,
+`proxy-2`, …, `proxy-N`), и Xray-core автоматически выбирает лучший из
+них через balancer.
 
 ---
 
 ## Источники
 
-Фактические файлы выбраны по актуальной структуре репозиториев
-(проверено через GitHub API):
+Берём публичные GitHub-репозитории (декларативно, через `sources.yaml`):
 
 | Источник | Файлы | Протоколы |
 |---|---|---|
-| [FLAT447/v2ray-lists](https://github.com/FLAT447/v2ray-lists) | `WHITE_FULL.txt`, `BLACK_FULL.txt` | vless, ss, hysteria2 |
-| [hiztin/VLESS-PO-GRIBI](https://github.com/hiztin/VLESS-PO-GRIBI) | `deploy/sub.txt` (объединённая) | vless, ss, vmess |
-| [AvenCores/goida-vpn-configs](https://github.com/AvenCores/goida-vpn-configs) | `githubmirror/{1,6,22,23,24,25}.txt` (рекомендованные в README; 2.txt≈100 МБ и 21.txt≈20 МБ намеренно не включены) | vless, vmess, trojan, ss, hy2, socks5 |
-| [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia) | `BLACK_VLESS_RUS.txt`, `BLACK_SS+All_RUS.txt`, `BLACK_VLESS_RUS_mobile.txt`, `BLACK_SS_WEAK_DPI_RUS.txt`, `Vless-Reality-White-Lists-Rus-Mobile.txt` | vless, vmess, hy2, trojan |
-| [whoahaow/rjsxrd](https://github.com/whoahaow/rjsxrd) | `githubmirror/bypass/bypass-all.txt` | vless, ss, trojan, vmess |
+| [`FLAT447/v2ray-lists`](https://github.com/FLAT447/v2ray-lists) | `WHITE_FULL.txt`, `BLACK_FULL.txt` | vless, ss, trojan, hysteria2 |
+| [`hiztin/VLESS-PO-GRIBI`](https://github.com/hiztin/VLESS-PO-GRIBI) | `deploy/subscriptions/1.txt` | vless (Reality/grpc/xhttp) |
+| [`AvenCores/goida-vpn-configs`](https://github.com/AvenCores/goida-vpn-configs) | `githubmirror/1.txt`, `githubmirror/7.txt` | vless, trojan, vmess, ss |
 
-Управление источниками — только через [`sources.yaml`](sources.yaml),
-код менять не нужно (см. ниже).
-
----
-
-## Структура проекта
-
-```
-meeyota-vpn/
-├── .github/
-│   └── workflows/
-│       └── update.yml          # сборка + проверки + Pages
-├── src/
-│   ├── collectors/
-│   │   └── github.py           # raw + API-fallback, retry, ETag-кэш, лимит размера
-│   ├── parsers/
-│   │   └── uri.py              # vless/vmess/trojan/ss/ssr/hy2/tuic/socks5, base64, &amp;
-│   ├── models/
-│   │   └── config.py           # VpnConfig + канонический хеш
-│   ├── checks/
-│   │   ├── connectivity.py     # sing-box: конфиг, запуск, внешний IPv4/IPv6
-│   │   ├── geolocation.py      # ipwho.is + ip-api.com, кэш
-│   │   └── verifier.py         # оркестрация: кэш, бюджет времени, вердикты
-│   ├── deduplicator.py
-│   ├── exporter.py             # подписки, Incy-ссылки, защита от обнуления
-│   ├── config.py               # sources.yaml → Settings
-│   └── main.py                 # точка входа
-├── data/                        # кэш, результаты проверок, stats.json, configs.json
-├── output/
-│   ├── vpn-whitelist-meeyota.txt
-│   └── vpn-wifi-meeyota.txt
-├── tests/                       # 67 тестов (pytest)
-├── sources.yaml
-├── requirements.txt
-└── run_local.sh
-```
+> **О goida:** README этого репозитория содержит «обход блокировок».
+> Мы используем его **только как технический склад URI**; никакой
+> RU-специфичной логики (CIDR/SNI/whitelist-bypass) в наши подписки
+> **не передаётся**. Семантика **нашего** проекта — агрегатор
+> плюс автоматический выбор, а не обход чего-либо.
+>
+> **О igareck/vpn-configs-for-russia:** этот источник **намеренно
+> не используется** — его декларируемая цель («whitelist bypass»)
+> противоречит цели нашего проекта.
 
 ---
 
-## Локальный запуск
+## Поддерживаемые протоколы
 
-```bash
-./run_local.sh                  # venv + зависимости + агрегация (без проверок)
-# или вручную:
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-python -m src.main --verbose
-```
+Парсер распознаёт следующие URI-схемы:
 
-С проверками соединения (нужен [sing-box](https://github.com/SagerNet/sing-box)
-в PATH или `SINGBOX_BIN=/path/to/sing-box`):
+* `vless://` (Reality, TLS, ws, grpc, xhttp, vision-flow)
+* `vmess://` (legacy JSON-base64)
+* `trojan://`
+* `ss://` (SIP002 + legacy base64)
+* `hysteria2://` / `hy2://`
 
-```bash
-SINGBOX_BIN=/usr/local/bin/sing-box python -m src.main --checks --workers 8 --check-minutes 60
-```
-
-Одноразовые ссылки `incy://import/{base64}`:
-
-```bash
-python -m src.main --import-link data/incy-import-links.txt
-```
-
-Тесты:
-
-```bash
-pytest tests/ -q
-```
-
-> Примечание: в средах, где `requests` не доверяет системным CA
-> (прокси/MITM), задайте `REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt`.
+Схемы `ssr://`, `tuic://`, `hysteria://` (v1) — Incy их распознаёт, но
+**не парсит** (документация Incy). Мы их пропускаем с предупреждением.
 
 ---
 
-## Как добавить новый источник
+## Как импортировать в Incy
 
-Отредактируйте `sources.yaml` (код не меняется):
+URL после публикации:
 
-```yaml
-sources:
-  # ... существующие ...
-
-  # GitHub-репозиторий:
-  - id: my-new-source            # уникальный id
-    name: "owner/repo"
-    type: github
-    repo: owner/repo
-    branch: main
-    files:
-      - path: subscriptions/all.txt
-        max_size_mb: 10          # опционально: лимит на файл
-
-  # Произвольный HTTPS-URL (подписка, которую отдаёт любой сервер):
-  - id: my-raw-url
-    type: url
-    files:
-      - https://example.com/subscription.txt
+```
+https://<username>.github.io/meeyota-vpn/vpn-whitelist-meeyota.json
+https://<username>.github.io/meeyota-vpn/vpn-wifi-meeyota.json
 ```
 
-Правила:
+В Incy:
 
-* `id` — уникальный, без пробелов (попадает в статистику и `configs.json`);
-* `files` — список путей (относительно корня репозитория) или URL;
-* файл может быть raw-URI, base64-блоком или base64-строками —
-  определяется автоматически;
-* `enabled: false` временно отключает источник;
-* после коммита `sources.yaml` следующий запуск (автоматически по push или
-  вручную) подхватит новый источник.
+1. Откройте приложение → Subscriptions → **+** → **Add from URL**.
+2. Вставьте `https://...vpn-whitelist-meeyota.json` → подтвердите.
+3. Повторите для `vpn-wifi-meeyota.json`.
+4. Подписка обновится автоматически (раз в 6 часов, см. workflow).
+
+Deep link (iOS/Android — откроет Incy напрямую):
+
+```
+incy://add/https://<username>.github.io/meeyota-vpn/vpn-whitelist-meeyota.json
+incy://add/https://<username>.github.io/meeyota-vpn/vpn-wifi-meeyota.json
+```
+
+Зашифрованный вариант (crypt1) — генерируется официальным
+[`@incy/link-encoder`](https://github.com/INCY-DEV/incy-link-encoder).
+Полезно для QR-кодов: URL подписки скрыт от посторонних глаз.
+
+---
+
+## Как устроен автоматический выбор узла
+
+Incy нативно поддерживает **full Xray JSON** — полный конфиг Xray-core,
+который передаётся движку почти без изменений. В таком конфиге мы
+объявляем:
+
+1. **Все собранные URI** как `outbounds` с тегами `proxy-1`, `proxy-2`, …
+   плюс один с тегом, **совпадающим с именем профиля** (см. ниже — почему).
+2. **Balancer** с селектором, который prefix-match'ит все `proxy-*`
+   outbounds + тег профиля, стратегия `leastLoad` (выбирает наименее
+   загруженный узел по данным observatory).
+3. **`burstObservatory`** с тем же `subjectSelector` — раз в 30 секунд
+   (whitelist) или 60 секунд (wifi) делает 2 ping-замера на
+   `http://www.google.com/generate_204` через каждый узел.
+4. **`fallbackTag: "direct"`** — если все узлы мёртвые, трафик идёт
+   напрямую (это требование Xray-core чтобы избежать «всё упало»).
+5. **DNS** через Cloudflare/Google DoH, и правило
+   `routing.rules: { ip: ["1.1.1.1","8.8.8.8"], outboundTag: "direct" }`
+   чтобы DNS-разрешение для проверок не шло через balancer (петля).
+
+В UI Incy показывает это как **одну запись**, потому что Incy
+документирует:
+
+> **Full configurations are displayed as a single server in the list.**
+> The server name is taken from the first proxy-outbound.
+
+Имя первого outbound'а мы ставим равным имени профиля (`VPN whitelist
+meeyota` или `VPN Wi-fi meeyota`) — это **единственный** документированный
+Incy способ показать имя для full Xray JSON. `meta.serverDescription`
+внутри JSON — это **описание** (подпись под именем, max 30 символов), а
+не само имя. `profile-title` в HTTP-заголовках/теле подписки — это имя
+**подписки**, а не имя сервера внутри неё.
+
+---
+
+## Как формируется VPN Wi-fi meeyota
+
+Из всего пула валидных конфигураций Wi-Fi подписка берёт подмножество:
+
+1. Узел должен иметь IP-адрес (доменные — пропускаются, т. к. для их
+   проверки нужен DNS-резолв, который в CI небезопасен).
+2. Внешний IP запрашивается через `ipwho.is` (основной) или
+   `ip-api.com` (fallback).
+3. Если страна — `RU` или не определена — узел **исключается**.
+4. Результат кэшируется в `data/check_results.json` с TTL 3 дня.
+
+**Известные ограничения** (документируем честно):
+
+* Проверка делается из GitHub Actions runner'а (США). Узел, отлично
+  работающий с домашнего Wi-Fi, может быть недоступен из CI и наоборот.
+  Это — цена отказа от VPS.
+* Гео-IP базы могут ошибаться. Поэтому применён строгий «нет
+  подтверждения ≠ вне РФ» подход.
 
 ---
 
 ## GitHub Actions
 
-Workflow [`.github/workflows/update.yml`](.github/workflows/update.yml):
+* Расписание: каждые 6 часов (`cron: "0 */6 * * *"`) + ручной запуск
+  (`workflow_dispatch`).
+* Pipeline:
+  1. Скачать файлы источников (`retry`, `timeout`, `ETag`-кэш,
+     GitHub API fallback при недоступности raw).
+  2. Распарсить → нормализовать → дедуплицировать → валидировать.
+  3. Сгенерировать два full Xray JSON в `output/`.
+  4. Структурно валидировать итог.
+  5. Задеплоить `output/` на GitHub Pages через `actions/deploy-pages@v4`.
+  6. Сохранить `data/stats.json` (через git commit, если изменился).
 
-* **вручную**: Actions → *Update VPN subscriptions* → *Run workflow*;
-* **автоматически**: расписание `0 */6 * * *` (каждые 6 часов);
-* при push в `main`, затронувшем `sources.yaml`, `src/**` или сам workflow;
-* установка sing-box для проверок;
-* обработка ошибок отдельных источников (один мёртвый источник не роняет
-  запуск), retry/timeout на уровне HTTP;
-* дедупликация, проверки, генерация двух подписок;
-* **коммит только если файлы действительно изменились**;
-* деплой `output/` на GitHub Pages (артефакт → `actions/deploy-pages`).
-
-Защита от обнуления: если количество валидных конфигов упало ниже
-`safety.min_configs` или потеряно более чем `safety.max_drop_ratio` от
-прежнего списка — подписки **не перезаписываются**, запуск завершается с
-кодом 2, старый файл и страница остаются на месте.
+**Защита от пустого результата:** если новый whitelist содержит
+меньше `safety.min_configs_whitelist` (по умолчанию 50) конфигов —
+workflow завершается с ошибкой и `output/` **не перезаписывается**.
 
 ---
 
-## GitHub Pages
+## Разработка
 
-Публикуется каталог `output/` в корень сайта. После публикации должны
-существовать:
+```bash
+# Установить зависимости
+pip install -r requirements.txt
+
+# Прогнать все тесты
+PYTHONPATH=. python3 tests/test_parsers.py
+PYTHONPATH=. python3 tests/test_normaliser.py
+PYTHONPATH=. python3 tests/test_validator.py
+PYTHONPATH=. python3 tests/test_emitter.py
+PYTHONPATH=. python3 tests/test_incy_import.py
+PYTHONPATH=. python3 tests/test_scale.py
+PYTHONPATH=. python3 tests/test_collector.py
+PYTHONPATH=. python3 tests/test_pipeline.py
+
+# Или одной командой:
+for t in tests/test_*.py; do PYTHONPATH=. python3 "$t" || exit 1; done
+
+# Локальный запуск пайплайна (нужен GITHUB_TOKEN для rate-limit)
+export GITHUB_TOKEN=...
+./run_local.sh
+```
+
+### Структура
 
 ```
-https://USERNAME.github.io/REPOSITORY/vpn-whitelist-meeyota.txt
-https://USERNAME.github.io/REPOSITORY/vpn-wifi-meeyota.txt
+src/
+├── collectors/github.py     # скачивание raw + ETag-кэш + API fallback
+├── parsers/uri.py           # vless/vmess/trojan/ss/hy2
+├── models/config.py         # VpnConfig + canonical hash
+├── normaliser.py            # lower-case параметров, host, fragment
+├── deduplicator.py          # по canonical hash
+├── validator.py             # структурные проверки
+├── emitter/xray.py          # генерация full Xray JSON
+├── checks/                  # Wi-Fi фильтрация (геолокация IP)
+└── main.py                  # entry point
+tests/
+├── test_parsers.py
+├── test_normaliser.py
+├── test_validator.py
+├── test_emitter.py
+├── test_incy_import.py      # симуляция импорта Incy
+├── test_scale.py            # проверка масштабирования
+├── test_collector.py        # с моком requests
+├── test_pipeline.py         # smoke-test pipeline с моком коллектора
+├── simulate_incy_import.py  # точно моделирует поведение Incy-парсера
+└── validate_incy_profile.py # структурная валидация JSON
+docs/
+├── ARCHITECTURE-DRAFT.md    # первоначальный архитектурный черновик
+├── TEST-JSON-EXAMPLE.json   # первый тестовый JSON (3 outbounds)
+├── SMOKE-TEST-whitelist.json # минимальный smoke-test whitelist
+└── SMOKE-TEST-wifi.json     # минимальный smoke-test wifi
 ```
-
-Для этого репозитория:
-
-```
-https://ilya4575.github.io/meeyota-vpn/vpn-whitelist-meeyota.txt
-https://ilya4575.github.io/meeyota-vpn/vpn-wifi-meeyota.txt
-```
-
-### Одноразовая настройка (делает владелец репозитория)
-
-1. Откройте **Settings → Pages**;
-2. в блоке **Build and deployment**:
-   * **Source** → выберите **GitHub Actions**;
-3. сохраните.
-
-> Альтернатива — API: `gh api -X PUT /repos/USERNAME/REPOSITORY/pages -f build_type=workflow`
-> (нужен токен владельца, а не GitHub App).
-
-После этого каждый успешный запуск workflow сам обновит сайт. URL из
-секции `pages` в `sources.yaml` автоматически подставляются в блок Incy-ссылок
-README и в `data/incy-links.txt`.
 
 ---
 
-## Данные и статистика
+## Что проверено автоматически, а что — нет
 
-| Файл | Что хранит |
-|---|---|
-| `data/stats.json` | счётчики: найдено / валидных / битых / уникальных / дубликатов / whitelist / wifi + статус каждого источника + статистика проверок |
-| `data/configs.json` | все уникальные конфиги: `protocol, address, port, name, source, raw, hash, last_check, country, ip` |
-| `data/check_results.json` | результаты проверок по серверам (verdict, ip4/ip6, страны, дата) и по хешам конфигов |
-| `data/geo_cache.json` | кэш «IP → страна» (до `checks.geo_cache_max` записей) |
-| `data/incy-links.txt` | готовые `incy://add/...` ссылки |
-| `data/cache/` | кэш скачанных файлов и ETag (не коммитится) |
+| Проверка | Как проверено | Статус |
+|---|---|---|
+| Один JSON → один сервер в Incy | Симулятор `tests/simulate_incy_import.py` моделирует поведение Incy-парсера по официальной документации | ✅ автоматически |
+| Структура JSON (balancer, observatory, fallbackTag, DNS, правила) | `tests/validate_incy_profile.py` — структурный валидатор | ✅ автоматически |
+| Масштабирование до 1000+ outbounds | `tests/test_scale.py` — генерит 1000/2000 outbounds и проверяет | ✅ автоматически |
+| Имя сервера берётся из `outbounds[0].tag` | Тест `test_emit_first_outbound_matches_profile_name` | ✅ автоматически |
+| Xray-core принимает JSON без ошибок | **Не проверено** — в этом окружении xray-core недоступен | ⚠️ требует ручного теста в Incy |
+| Автовыбор реально работает в Incy | **Не проверено** — Incy нельзя запустить в CI | ⚠️ требует ручного теста |
+| Incy отображает 2 записи после импорта обеих подписок | **Не проверено** — Incy нельзя запустить в CI | ⚠️ требует ручного теста |
+
+### Что нужно проверить вручную после первого деплоя
+
+1. Открыть Incy → импортировать обе ссылки.
+2. Убедиться, что в списке **ровно 2 сервера** с именами `VPN whitelist
+   meeyota` и `VPN Wi-fi meeyota`.
+3. Включить `VPN whitelist meeyota` → проверить, что трафик идёт
+   (значит Xray-core поднял конфиг и balancer работает).
+4. Подождать 30 секунд, переподключиться — должен выбраться другой
+   узел (значит burstObservatory обновляет данные).
 
 ---
 
-## Ограничения
+## Известные ограничения
 
-* Публичные бесплатные конфигурации — доверять им нельзя: это чужие серверы,
-  работа и приватность не гарантируются.
-* Транспорт `xhttp`/`httpupgrade` поддерживается xray/v2rayN/Incy, но не
-  sing-box — такие конфиги попадают в whitelist, но для Wi-fi-подписки не
-  проверяются (вердикт `error`).
-* Wi-fi-подписка растёт по мере проверок: за один запуск проверяется
-  бюджет `checks.minutes` минут работы, остальные серверы дойдут до
-  проверки в следующих запусках (результаты кэшируются).
-* Геолокация — вероятностная; см. дисклеймер выше.
-* История коммитов `output/` и `data/` со временем разрастает репозиторий;
-  при необходимости его можно очистить (история подписок не критична).
+1. **Incy берёт имя full Xray config только из тега первого outbound'а.**
+   Других штатных способов (по документации Incy) нет. Это значит, что
+   имя профиля живёт внутри `outbounds[0].tag`. Это требование
+   клиента, а не наш выбор.
+2. **GitHub Actions runner в США.** Wi-Fi-проверка может false-positive
+   / false-negative относительно пользовательской сети.
+3. **GitHub Pages не позволяет задать HTTP-заголовки** произвольно.
+   Метаданные подписки (`#profile-title:` и т. п.) мы кладём **в тело**
+   JSON-файла как Incy-комментарии. JSON-парсер их игнорирует, Incy —
+   документированный fallback.
+4. **Без VPS мы не делаем real-network-проверки тысяч URI** —
+   Wi-Fi-фильтрация идёт с TTL-кэшем 3 дня.
+
+---
+
+## Лицензия
+
+MIT (или другая по вашему выбору — добавьте файл `LICENSE`).

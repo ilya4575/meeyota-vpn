@@ -1,6 +1,2 @@
-# Зависимости meeyota-vpn
-requests>=2.31,<3
-PyYAML>=6.0,<7
-
-# Для тестов: pip install -r requirements-dev.txt (или просто: pip install pytest)
-pytest>=8.0
+PyYAML>=6.0
+requests>=2.31

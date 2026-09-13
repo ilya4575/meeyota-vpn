@@ -1,16 +1,4 @@
-"""meeyota-vpn — агрегатор публичных VPN-конфигураций.
-
-Точка входа:  python -m src.main [опции]
-
-Этапные этапы:
-    1. скачивание файлов-источников (retry, timeout, ETag-кэш, API-fallback);
-    2. парсинг и нормализация URI (vless, vmess, trojan, ss, ssr, hy2, tuic, socks5);
-    3. дедупликация;
-    4. проверки для «VPN Wi-fi» (опция --checks): реальное соединение через
-       sing-box + геолокация внешнего IPv4/IPv6, строгой отсев RU/конфликтов;
-    5. генерация двух подписок в output/ + data/ (stats, configs, результаты);
-    6. защита от обнуления: при аномально малом списке подписки не перезаписываются.
-"""
+"""Главная точка входа: pipeline сбора → парсинга → нормализации → дедупликации → валидации → эмиссии."""
 
 from __future__ import annotations
 
@@ -19,262 +7,262 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+import time
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-from .checks.connectivity import singbox_available
-from .checks.verifier import CheckResults, VERDICT_OK, verify
-from .collectors import Collector, SourceError
-from .config import ConfigError, load_settings
-from .deduplicator import dedup, sort_for_export
-from .exporter import (
-    WHITELIST_FILE,
-    WIFI_FILE,
-    count_uris,
-    render_incy_links,
-    update_readme_links,
-    wipeout_ok,
-    write_import_link_file,
-    write_incy_links_file,
-    write_outputs,
-)
-from .parsers import parse_text
-
-log = logging.getLogger("meeyota")
+from .collectors.github import GithubCollector
+from .config import Config, load_config
+from .deduplicator import deduplicate
+from .emitter.xray import build_full_xray_config, render_json
+from .models.config import VpnConfig
+from .normaliser import normalise
+from .parsers.uri import parse_text
+from .validator import validate_all
 
 
-def _iso_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+log = logging.getLogger("meeyota-vpn")
 
 
-def setup_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
+@dataclass
+class RunStats:
+    started_at: float = field(default_factory=time.time)
+    by_source_downloaded: Counter = field(default_factory=Counter)
+    by_source_lines: Counter = field(default_factory=Counter)
+    by_scheme_parsed: Counter = field(default_factory=Counter)
+    by_scheme_after_validate: Counter = field(default_factory=Counter)
+    parsed_total: int = 0
+    normalised_total: int = 0
+    dedup_dropped: int = 0
+    validation_errors: int = 0
+    whitelist_count: int = 0
+    wifi_count: int = 0
+    wifi_filtered_out: int = 0
+    source_errors: list = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "started_at": self.started_at,
+            "finished_at": time.time(),
+            "by_source_downloaded_bytes": dict(self.by_source_downloaded),
+            "by_source_lines": dict(self.by_source_lines),
+            "by_scheme_parsed": dict(self.by_scheme_parsed),
+            "by_scheme_after_validate": dict(self.by_scheme_after_validate),
+            "parsed_total": self.parsed_total,
+            "normalised_total": self.normalised_total,
+            "dedup_dropped": self.dedup_dropped,
+            "validation_errors": self.validation_errors,
+            "whitelist_count": self.whitelist_count,
+            "wifi_count": self.wifi_count,
+            "wifi_filtered_out": self.wifi_filtered_out,
+            "source_errors": self.source_errors,
+        }
+
+
+def _collect_source(coll: GithubCollector, src, stats: RunStats) -> list:
+    """Скачивает все файлы источника, парсит, возвращает список VpnConfig."""
+    out: list = []
+    for f in src.files:
+        r = coll.download(src.id, src.repo, src.branch, f.path)
+        if r.error:
+            stats.source_errors.append(
+                f"{src.id}/{f.path}: {r.error}"
+            )
+            log.warning("source error: %s/%s: %s", src.id, f.path, r.error)
+            continue
+        stats.by_source_downloaded[f"{src.id}/{f.path}"] += len(r.content)
+        text = r.content.decode("utf-8", errors="replace")
+        parsed, errors = parse_text(text, source_id=src.id)
+        for cfg in parsed:
+            cfg.source_id = src.id
+        out.extend(parsed)
+        stats.by_source_lines[f"{src.id}/{f.path}"] += len(parsed)
+        for _ in errors:
+            pass  # parse errors уже не считаем (статистика через parsed_total)
+        log.info(
+            "%s/%s: parsed %d configs (cache=%s, %dms)",
+            src.id,
+            f.path,
+            len(parsed),
+            r.from_cache,
+            r.duration_ms,
+        )
+    return out
+
+
+def _run_pipeline(cfg: Config) -> RunStats:
+    stats = RunStats()
+    coll = GithubCollector(
+        cache_dir=Path(cfg.settings.cache_dir),
+        timeout=cfg.settings.timeout,
+        retries=cfg.settings.retries,
+        backoff=cfg.settings.backoff,
+        max_file_size_mb=cfg.settings.max_file_size_mb,
+        use_api_fallback=cfg.settings.use_api_fallback,
+    )
+
+    all_configs: list = []
+    for src in cfg.sources:
+        if src.type == "github":
+            cfgs = _collect_source(coll, src, stats)
+        else:
+            log.warning("unsupported source type: %s", src.type)
+            continue
+        all_configs.extend(cfgs)
+
+    # Схемы — статистика
+    for c in all_configs:
+        stats.by_scheme_parsed[c.scheme] += 1
+    stats.parsed_total = len(all_configs)
+    log.info("parsed total: %d", stats.parsed_total)
+
+    # Нормализация
+    normalised = [normalise(c) for c in all_configs]
+    stats.normalised_total = len(normalised)
+
+    # Валидация
+    valid, errors = validate_all(normalised)
+    stats.validation_errors = len(errors)
+    for c in valid:
+        stats.by_scheme_after_validate[c.scheme] += 1
+    log.info(
+        "valid: %d, errors: %d",
+        len(valid),
+        len(errors),
+    )
+
+    # Дедупликация
+    unique, dropped = deduplicate(valid)
+    stats.dedup_dropped = dropped
+    log.info("unique: %d, dropped by dedup: %d", len(unique), dropped)
+
+    # Лимит на размер whitelist
+    whitelist = unique[: cfg.safety.max_outbounds_whitelist]
+    stats.whitelist_count = len(whitelist)
+    log.info("whitelist count (capped): %d", len(whitelist))
+
+    # Wi-Fi: фильтрация по геолокации
+    wifi = _filter_wifi(unique, cfg, stats)
+    stats.wifi_count = len(wifi)
+
+    # Эмиссия
+    out_dir = Path("output")
+    out_dir.mkdir(exist_ok=True)
+
+    wl_config = build_full_xray_config(
+        whitelist, "VPN whitelist meeyota", burst_interval="30s"
+    )
+    (out_dir / "vpn-whitelist-meeyota.json").write_bytes(render_json(wl_config))
+
+    wifi_config = build_full_xray_config(
+        wifi, "VPN Wi-fi meeyota", burst_interval="60s"
+    )
+    (out_dir / "vpn-wifi-meeyota.json").write_bytes(render_json(wifi_config))
+
+    log.info(
+        "emitted: whitelist=%d outbounds, wifi=%d outbounds",
+        len(whitelist),
+        len(wifi),
+    )
+
+    return stats
+
+
+def _filter_wifi(configs: list, cfg: Config, stats: RunStats) -> list:
+    """Фильтрация Wi-Fi: пропускаем только non-RU IP-узлы.
+
+    Использует persistent cache в data/check_results.json.
+    Доменные узлы пропускаются (нет способа провести IP-проверку без DNS).
+    """
+    from .checks.verifier import (
+        is_non_russian,
+        load_cache,
+        save_cache,
+    )
+
+    cache_path = Path("data/check_results.json")
+    cache = load_cache(cache_path)
+    ttl_seconds = cfg.checks.ttl_days * 24 * 3600
+
+    wifi: list = []
+    filtered_out = 0
+    for c in configs:
+        ok, reason, country = is_non_russian(c, cache, ttl_seconds)
+        if ok:
+            wifi.append(c)
+        else:
+            filtered_out += 1
+    stats.wifi_filtered_out = filtered_out
+    save_cache(cache_path, cache)
+
+    # Лимит на wifi
+    wifi = wifi[: cfg.safety.max_outbounds_wifi]
+    return wifi
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        description="meeyota-vpn: aggregate public VPN configs into full Xray JSON profiles"
+    )
+    parser.add_argument(
+        "--config",
+        default="sources.yaml",
+        help="path to sources.yaml (default: sources.yaml)",
+    )
+    parser.add_argument(
+        "--stats-output",
+        default="data/stats.json",
+        help="path for stats.json (default: data/stats.json)",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="reduce log noise",
+    )
+    args = parser.parse_args(argv)
+
     logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-        stream=sys.stderr,
+        level=logging.WARNING if args.quiet else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
     )
 
+    cfg = load_config(args.config)
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        prog="meeyota-vpn",
-        description="Агрегатор публичных VPN-конфигураций (GitHub → подписки Incy/v2rayN)",
-    )
-    p.add_argument("--config", default="sources.yaml", help="путь к sources.yaml (по умолчанию ./sources.yaml)")
-    p.add_argument("--checks", action="store_true", help="выполнять проверки соединения и геолокации (нужен sing-box)")
-    p.add_argument("--workers", type=int, default=None, help="число параллельных проверок (по умолчанию из sources.yaml)")
-    p.add_argument("--check-minutes", type=float, default=None, help="бюджет времени на проверки, минут")
-    p.add_argument("--singbox", default=None, help="путь к бинарнику sing-box (или env SINGBOX_BIN)")
-    p.add_argument("--import-link", metavar="FILE", default=None,
-                   help="сформировать файл с одноразовыми ссылками incy://import/{base64}")
-    p.add_argument("--verbose", action="store_true", help="подробный лог")
-    return p.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    setup_logging(args.verbose)
-
-    config_path = Path(args.config)
-    root = config_path.resolve().parent
-
+    # Safety: пустой результат не перезаписываем
     try:
-        settings = load_settings(config_path)
-    except ConfigError as e:
-        log.error("конфигурация: %s", e)
+        stats = _run_pipeline(cfg)
+    except Exception as e:
+        log.exception("pipeline failed: %s", e)
         return 1
 
-    # Переопределение данных Pages переменными окружения (CI-friendly)
-    if os.environ.get("PAGES_USERNAME"):
-        settings.pages_username = os.environ["PAGES_USERNAME"]
-    if os.environ.get("PAGES_REPOSITORY"):
-        settings.pages_repository = os.environ["PAGES_REPOSITORY"]
+    out_dir = Path("output")
+    wl_json = out_dir / "vpn-whitelist-meeyota.json"
+    wf_json = out_dir / "vpn-wifi-meeyota.json"
 
-    data_dir = root / settings.data_dir
-    output_dir = root / "output"
-    data_dir.mkdir(parents=True, exist_ok=True)
+    if not wl_json.exists() or not wf_json.exists():
+        log.error("output files missing")
+        return 1
 
-    log.info("=== meeyota-vpn: запуск (%s) ===", _iso_now())
-    log.info("источников: %d", len([s for s in settings.sources if s.enabled]))
-
-    # ------------------------------------------------------------------
-    # 1) Сборка источников
-    # ------------------------------------------------------------------
-    collector = Collector(settings, root=root)
-    all_configs: list[Any] = []
-    source_stats: list[dict[str, Any]] = []
-    found = invalid = 0
-
-    for src in settings.sources:
-        if not src.enabled:
-            log.info("источник %s: отключён, пропускаю", src.id)
-            continue
-        stat: dict[str, Any] = {
-            "id": src.id,
-            "name": src.name,
-            "type": src.type,
-            "status": "ok",
-            "error": None,
-            "files": [],
-            "configs": 0,
-            "invalid": 0,
-        }
-        try:
-            for fref in src.files:
-                if src.type == "github":
-                    text = collector.fetch_github(src.repo, src.branch, fref.path, fref.max_size_mb)
-                else:
-                    text = collector.fetch_url(fref.path, fref.max_size_mb)
-                cfgs, inv = parse_text(text, src.id)
-                all_configs.extend(cfgs)
-                found += len(cfgs)
-                invalid += inv
-                stat["configs"] += len(cfgs)
-                stat["invalid"] += inv
-                stat["files"].append(
-                    {"path": fref.path, "lines": len(text.splitlines()), "configs": len(cfgs), "invalid": inv}
-                )
-                log.info(
-                    "  %s: %s — строк: %d, валидных: %d, битых: %d",
-                    src.id, fref.path, len(text.splitlines()), len(cfgs), inv,
-                )
-        except SourceError as e:
-            stat["status"] = "error"
-            stat["error"] = str(e)
-            log.error("источник %s НЕДОСТУПЕН: %s", src.id, e)
-        source_stats.append(stat)
-
-    ok_sources = sum(1 for s in source_stats if s["status"] == "ok")
-    log.info("скачано источников: %d/%d; найдено URI: %d; битых строк: %d",
-             ok_sources, len(source_stats), found, invalid)
-
-    # ------------------------------------------------------------------
-    # 2) Дедупликация
-    # ------------------------------------------------------------------
-    unique, duplicates = dedup(all_configs)
-    unique = sort_for_export(unique)
-    log.info("уникальных конфигов: %d (дубликатов удалено: %d)", len(unique), duplicates)
-
-    # ------------------------------------------------------------------
-    # 3) Проверки для подписки «VPN Wi-fi meeyota»
-    # ------------------------------------------------------------------
-    results_path = data_dir / "check_results.json"
-    results = CheckResults.load(results_path)
-    check_stats: dict[str, Any] | None = None
-
-    if args.checks:
-        singbox = singbox_available(args.singbox)
-        if not singbox:
-            log.warning("--checks: sing-box не найден (установите его или задайте SINGBOX_BIN) — проверки пропущены")
-        check_stats = verify(
-            unique,
-            settings,
-            results,
-            singbox,
-            workers=args.workers,
-            minutes=args.check_minutes,
+    # Проверка минимального размера (анти-пустой-результат)
+    if stats.whitelist_count < cfg.safety.min_configs_whitelist:
+        log.error(
+            "whitelist count %d < min %d — refusing to overwrite",
+            stats.whitelist_count,
+            cfg.safety.min_configs_whitelist,
         )
-        results.save(results_path)
-        log.info(
-            "проверки: серверов %d (в очереди %d, из кэша %d), проверено %d, "
-            "ошибок %d, вердикты %s",
-            check_stats.get("total_servers", 0), check_stats.get("due", 0),
-            check_stats.get("cached", 0), check_stats.get("checked", 0),
-            check_stats.get("errors", 0), check_stats.get("verdicts", {}),
-        )
+        return 1
 
-    # применяем сохранённые результаты к конфигам
-    for c in unique:
-        r = results.configs.get(c.hash)
-        if r:
-            c.last_check = r.get("last_check")
-            c.country = r.get("country")
-            c.ip = r.get("ip")
-            c.verdict = r.get("verdict")
-
-    wifi = [c for c in unique if c.verdict == VERDICT_OK]
-    log.info("подписка whitelist: %d; подписка wifi (проверено вне РФ): %d", len(unique), len(wifi))
-
-    # ------------------------------------------------------------------
-    # 4) Защита от обнуления + экспорт
-    # ------------------------------------------------------------------
-    prev_whitelist = count_uris(output_dir / WHITELIST_FILE)
-    ok, reason = wipeout_ok(prev_whitelist, len(unique), settings.min_configs, settings.max_drop_ratio)
-    if not ok:
-        log.critical(
-            "ПОДПИСКА НЕ ОБНОВЛЯЕТСЯ (защита от обнуления): %s. "
-            "Прежний файл сохранён.", reason,
-        )
-        _write_stats(root, data_dir, source_stats, found, invalid, len(unique), duplicates,
-                     len(unique), len(wifi), check_stats, aborted=reason)
-        return 2
-
-    paths = write_outputs(output_dir, unique, wifi, settings, results.configs)
-    _write_stats(root, data_dir, source_stats, found, invalid, len(unique), duplicates,
-                 len(unique), len(wifi), check_stats)
-    _write_configs_json(data_dir, unique)
-
-    # Incy-ссылки: README (блок между маркерами) + data/incy-links.txt
-    readme = root / "README.md"
-    if readme.exists():
-        if update_readme_links(readme, render_incy_links(settings)):
-            log.info("README.md: блок Incy-ссылок обновлён")
-    write_incy_links_file(data_dir / "incy-links.txt", settings)
-
-    if args.import_link:
-        write_import_link_file(Path(args.import_link), output_dir)
-        log.info("одноразовые incy://import-ссылки: %s", args.import_link)
-
-    log.info("=== готово: %s (%d), %s (%d) ===",
-             paths["whitelist"].name, len(unique), paths["wifi"].name, len(wifi))
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# Хранение данных
-# ---------------------------------------------------------------------------
-
-def _write_configs_json(data_dir: Path, configs: list[Any]) -> None:
-    payload = [c.to_dict() for c in configs]
-    path = data_dir / "configs.json"
-    path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-
-
-def _write_stats(
-    root: Path,
-    data_dir: Path,
-    source_stats: list[dict[str, Any]],
-    found: int,
-    invalid: int,
-    unique_count: int,
-    duplicates: int,
-    whitelist_count: int,
-    wifi_count: int,
-    check_stats: dict[str, Any] | None,
-    aborted: str | None = None,
-) -> None:
-    stats = {
-        "generated_at": _iso_now(),
-        "aborted": aborted,
-        "sources": source_stats,
-        "found": found,
-        "invalid": invalid,
-        "unique": unique_count,
-        "duplicates": duplicates,
-        "whitelist": whitelist_count,
-        "wifi": wifi_count,
-        "checks": check_stats,
-    }
-    path = data_dir / "stats.json"
-    path.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
-    log.info(
-        "статистика: найдено=%d валидных=%d битых=%d уникальных=%d дубликатов=%d "
-        "whitelist=%d wifi=%d",
-        found, found - invalid, invalid, unique_count, duplicates, whitelist_count, wifi_count,
+    # Сохранение статистики
+    stats_path = Path(args.stats_output)
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    stats_path.write_text(
+        json.dumps(stats.to_dict(), indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
+
+    log.info("done. whitelist=%d, wifi=%d", stats.whitelist_count, stats.wifi_count)
+    return 0
 
 
 if __name__ == "__main__":

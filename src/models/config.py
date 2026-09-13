@@ -1,73 +1,78 @@
-"""Нормализованная модель VPN-конфигурации.
-
-Каждый конфиг хранит:
-    protocol  — протокол (vless, vmess, trojan, ss, ssr, hysteria2, tuic, socks5, ...)
-    address   — сервер (IP или домен), нормализованный (lowercase, без точки)
-    port      — порт
-    name      — человекочитаемое имя
-    source    — id источников, из которых найден конфиг (может быть несколько)
-    raw       — ОРИГИНАЛЬНАЯ строка URI (без изменений)
-    hash      — канонический SHA-256 для дедупликации
-    last_check / country / ip — результат последней проверки (подписка «Wi-fi»)
-"""
+"""VpnConfig — нормализованное представление одной VPN-конфигурации."""
 
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass, field
 from typing import Any
 
 
-def make_hash(protocol: str, address: str, port: int, identity: dict[str, Any]) -> str:
-    """Канонический хеш конфигурации.
-
-    В хеш попадают только поля, определяющие «кто это»: сервер, порт,
-    учётные данные и транспорт. Косметические параметры (fingerprint,
-    allowInsecure и т.п.) в хеш не попадают.
-    """
-    canonical = {
-        "protocol": protocol.lower(),
-        "address": str(address).strip().lower().rstrip("."),
-        "port": int(port),
-        "identity": {k: ("" if v is None else v) for k, v in sorted(identity.items())},
-    }
-    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 @dataclass
 class VpnConfig:
-    protocol: str
-    address: str
-    port: int
-    name: str
-    source: list[str]
+    """Нормализованное представление одной VPN-конфигурации."""
+
+    scheme: str
     raw: str
-    params: dict[str, Any] = field(default_factory=dict)
-    hash: str = ""
-    last_check: str | None = None
-    country: str | None = None
-    ip: str | None = None
-    verdict: str | None = None   # ok | ru | conflict | error | None(не проверено)
-    detail: str | None = None
+    host: str
+    port: int
+    params: dict
+    fragment: str
+    name: str
+    protocol_data: dict = field(default_factory=dict)
+    source_id: str = ""
 
-    @property
-    def server_key(self) -> str:
-        """Ключ «сервер» для группировки проверок: адрес и порт."""
-        return f"{self.address.lower().rstrip('.')}:{self.port}"
+    def make_hash(self) -> str:
+        """Канонический хеш для дедупликации.
 
-    def to_dict(self) -> dict[str, Any]:
-        """Сериализация в схеме, требуемой спецификацией."""
-        return {
-            "protocol": self.protocol,
-            "address": self.address,
-            "port": self.port,
-            "name": self.name,
-            "source": list(self.source),
-            "raw": self.raw,
-            "hash": self.hash,
-            "last_check": self.last_check,
-            "country": self.country,
-            "ip": self.ip,
-        }
+        Сравниваются только семантически значимые поля. Не учитываются:
+        - Telegram=, fm=, _t=, descriptions=, fp в разных регистрах;
+        - query-порядок параметров;
+        - фрагмент (имя сервера).
+        """
+        keys = (
+            "sni",
+            "host",
+            "path",
+            "serviceName",
+            "type",
+            "alpn",
+            "pbk",
+            "sid",
+            "fp",
+            "method",
+            "password",
+            "encryption",
+            "flow",
+            "security",
+            "network",
+            "headerType",
+            "allowInsecure",
+            "insecure",
+            "mode",
+            "packetEncoding",
+            "packet-encoding",
+            "spx",
+            "authority",
+        )
+        params_subset = sorted(
+            f"{k}={self.params.get(k, self.protocol_data.get(k, ''))}" for k in keys
+        )
+        critical = "|".join(
+            (
+                self.scheme.lower(),
+                self.host.lower(),
+                str(self.port),
+                str(self.params.get("security", "")),
+                str(self.params.get("type", "")),
+                str(self.protocol_data.get("uuid", "")),
+                str(self.protocol_data.get("password", "")),
+                str(self.protocol_data.get("method", "")),
+            )
+            + tuple(params_subset)
+        )
+        return hashlib.sha256(critical.encode("utf-8")).hexdigest()
+
+
+def make_hash(c: VpnConfig) -> str:
+    """Удобная функция-хелпер."""
+    return c.make_hash()

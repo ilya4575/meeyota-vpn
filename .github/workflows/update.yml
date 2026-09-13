@@ -1,44 +1,28 @@
-name: Update VPN subscriptions
+name: update
 
-# Запуск:
-#   * вручную:      Actions → Update VPN subscriptions → Run workflow
-#   * по расписанию: каждые 6 часов
-#   * при изменении кода/конфига (push в main)
 on:
-  workflow_dispatch: {}
   schedule:
+    # каждые 6 часов
     - cron: "0 */6 * * *"
-  push:
-    branches: [main]
-    paths:
-      - "sources.yaml"
-      - "src/**"
-      - ".github/workflows/update.yml"
-
-concurrency:
-  group: meeyota-subscriptions
-  cancel-in-progress: false
+  workflow_dispatch:
 
 permissions:
   contents: write
   pages: write
   id-token: write
 
-env:
-  SINGBOX_VERSION: "1.14.0"
+concurrency:
+  group: update-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    name: Aggregate, check, commit
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 20
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -48,53 +32,38 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install sing-box (для проверок VPN Wi-fi)
-        run: |
-          curl -fsSL -o /tmp/sing-box.tar.gz \
-            "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64-glibc.tar.gz"
-          tar -xzf /tmp/sing-box.tar.gz -C /usr/local/bin sing-box
-          sing-box version
-
-      - name: Run aggregator (collect → parse → dedup → checks → export)
-        run: python -m src.main --checks --workers 10 --check-minutes 110 --verbose
+      - name: Run pipeline
         env:
-          SINGBOX_BIN: /usr/local/bin/sing-box
-
-      - name: Commit changes (только если файлы изменились)
+          PAGES_USERNAME: ${{ github.repository_owner }}
+          PAGES_REPOSITORY: ${{ github.event.repository.name }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add output/ \
-                  data/configs.json \
-                  data/check_results.json \
-                  data/geo_cache.json \
-                  data/stats.json \
-                  data/incy-links.txt \
-                  README.md
-          if git diff --cached --quiet; then
-            echo "Nothing changed — skipping commit"
-          else
-            git commit -m "chore: update meeyota subscriptions ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
-            git push
-          fi
+          python -m src.main
 
-      - name: Upload GitHub Pages artifact
-        if: success()
+      - name: Validate emitted profiles (structural)
+        run: |
+          python tests/test_incy_import.py
+          python tests/test_scale.py
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: output/
-
-  deploy:
-    name: Deploy to GitHub Pages
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
+          path: output
 
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Commit stats (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/stats.json || true
+          if git diff --cached --quiet; then
+            echo "No stats changes"
+          else
+            git commit -m "chore: update stats [skip ci]"
+            git push || echo "Push failed (probably no permission)"
+          fi
