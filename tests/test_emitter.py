@@ -118,6 +118,27 @@ def test_emit_json_serializable():
     print("✓ test_emit_json_serializable")
 
 
+def test_policy_levels_is_dict_not_list():
+    """Regression: Xray-core требует policy.levels как dict {"0": {...}}, а не list.
+
+    JSON-массив levels ломает unmarshal map<uint32, Policy> и Xray-core
+    отказывается стартовать со всем конфигом целиком.
+    """
+    cfg = build_full_xray_config([_make_vless_cfg(), _make_trojan_cfg()], "VPN whitelist meeyota")
+    assert "policy" in cfg, "emitter must include 'policy' section"
+    levels = cfg["policy"]["levels"]
+    assert isinstance(levels, dict), f"policy.levels must be dict, got {type(levels).__name__}"
+    assert not isinstance(levels, list)
+    assert "0" in levels, 'policy.levels must contain key "0"'
+    assert levels["0"]["handshake"] == 2
+    assert levels["0"]["connIdle"] == 300
+    assert levels["0"]["uplinkOnly"] == 2
+    assert levels["0"]["downlinkOnly"] == 5
+    # Ключ обязан парситься как uint32
+    assert 0 <= int("0") <= 4294967295
+    print("✓ test_policy_levels_is_dict_not_list")
+
+
 if __name__ == "__main__":
     test_emit_minimal()
     test_emit_scalable()
@@ -126,4 +147,5 @@ if __name__ == "__main__":
     test_emit_fallback_tag_set()
     test_emit_routing_rule_references_balancer()
     test_emit_json_serializable()
+    test_policy_levels_is_dict_not_list()
     print("\nAll emitter tests passed.")
