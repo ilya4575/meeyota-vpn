@@ -1,0 +1,157 @@
+{
+  "log": {"loglevel": "warning"},
+  "dns": {
+    "servers": [
+      "https://1.1.1.1/dns-query",
+      "https://8.8.8.8/dns-query"
+    ],
+    "queryStrategy": "UseIP"
+  },
+  "inbounds": [
+    {
+      "tag": "socks-in",
+      "listen": "127.0.0.1",
+      "port": 10808,
+      "protocol": "socks",
+      "settings": {"udp": true, "auth": "noauth"},
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
+    },
+    {
+      "tag": "http-in",
+      "listen": "127.0.0.1",
+      "port": 10809,
+      "protocol": "http",
+      "settings": {},
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "VPN whitelist meeyota",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "test-node-1.example.com",
+            "port": 443,
+            "users": [
+              {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "www.cloudflare.com",
+          "fingerprint": "chrome",
+          "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "shortId": "ababababab"
+        }
+      }
+    },
+    {
+      "tag": "proxy-1",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "test-node-2.example.com",
+            "port": 8443,
+            "users": [
+              {
+                "id": "22222222-2222-2222-2222-222222222222",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "test-node-2.example.com",
+          "allowInsecure": false
+        },
+        "wsSettings": {
+          "path": "/secretpath",
+          "headers": {"Host": "test-node-2.example.com"}
+        }
+      }
+    },
+    {
+      "tag": "proxy-2",
+      "protocol": "trojan",
+      "settings": {
+        "servers": [
+          {
+            "address": "test-node-3.example.com",
+            "port": 443,
+            "password": "trojan-test-password"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "test-node-3.example.com",
+          "allowInsecure": false,
+          "fingerprint": "chrome"
+        }
+      }
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "domainMatcher": "hybrid",
+    "rules": [
+      {"type": "field", "ip": ["1.1.1.1", "8.8.8.8"], "outboundTag": "direct"},
+      {"type": "field", "network": "tcp,udp", "balancerTag": "meeyota-auto"}
+    ],
+    "balancers": [
+      {
+        "tag": "meeyota-auto",
+        "selector": ["VPN whitelist meeyota", "proxy-"],
+        "strategy": {
+          "type": "leastLoad",
+          "settings": {
+            "expected": 2,
+            "maxRTT": "1s",
+            "tolerance": 0.01,
+            "baselines": ["300ms", "1s"]
+          }
+        },
+        "fallbackTag": "direct"
+      }
+    ]
+  },
+  "burstObservatory": {
+    "subjectSelector": ["VPN whitelist meeyota", "proxy-"],
+    "pingConfig": {
+      "destination": "http://www.google.com/generate_204",
+      "connectivity": "http://www.google.com/generate_204",
+      "interval": "30s",
+      "sampling": 2,
+      "timeout": "5s"
+    }
+  },
+  "stats": {},
+  "policy": {
+    "levels": [{"handshake": 2, "connIdle": 300, "uplinkOnly": 2, "downlinkOnly": 5}]
+  }
+}

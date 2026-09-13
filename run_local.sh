@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# Локальный запуск meeyota-vpn (без проверок соединения).
-# Для проверок «VPN Wi-fi» дополнительно нужен sing-box в PATH или SINGBOX_BIN.
+# Запуск pipeline локально для отладки.
+
 set -euo pipefail
+
 cd "$(dirname "$0")"
 
-if [ ! -d .venv ]; then
-  python3 -m venv .venv
-  ./.venv/bin/pip install --upgrade pip
-  ./.venv/bin/pip install -r requirements.txt
+pip install -q -r requirements.txt
+
+# Опционально — прокинуть GITHUB_TOKEN для увеличения rate-limit
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  export GITHUB_TOKEN
 fi
 
-ARGS=()
-if command -v sing-box >/dev/null 2>&1 || [ -n "${SINGBOX_BIN:-}" ]; then
-  ARGS+=(--checks)
-fi
+python -m src.main "$@"
 
-./.venv/bin/python -m src.main "${ARGS[@]}" --verbose
+echo
+echo "Output:"
+ls -la output/

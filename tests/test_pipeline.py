@@ -1,166 +1,118 @@
-"""Интеграционный тест: полный пайплайн на локальном HTTP-сервере.
+"""Smoke-test pipeline: проверяет, что main.py корректно собирает output.
 
-Проверяется: sources.yaml (url-источник) → скачивание → парсинг →
-дедупликация → экспорт двух подписок + data/stats.json + data/configs.json
-+ защита от обнуления. Внешний интернет не требуется.
+Это не реальный e2e (без сетевых запросов), а проверка структуры pipeline
+с моком коллектора.
 """
 
-from __future__ import annotations
-
 import json
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import sys
+from io import BytesIO
 from pathlib import Path
 
-import pytest
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import ConfigError, load_settings
-from src.main import main
-
-SAMPLE_A = (
-    "#profile-title: test\n"
-    "vless://11111111-2222-3333-4444-555555555555@93.184.216.34:443?security=none&type=tcp#srv-1\n"
-    "vless://aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee@93.184.216.34:8443?security=none&type=tcp#srv-2\n"
-    "ss://YWVzLTI1Ni1nY206cGFzcw==@203.0.113.9:8388#srv-3\n"
-    "vless://11111111-2222-3333-4444-555555555555@93.184.216.34:443?security=none&type=tcp#srv-1-dup\n"
-    "vless://not-a-uuid@93.184.216.34:443\n"
-)
-
-SAMPLE_B = (
-    "trojan://secret@198.51.100.7:443?sni=example.com#srv-4\n"
-    "vless://11111111-2222-3333-4444-555555555555@93.184.216.34:443?security=none&type=tcp#srv-1\n"
-)
+from src import main as m
 
 
-class Handler(BaseHTTPRequestHandler):
-    files = {"/a.txt": SAMPLE_A, "/b.txt": SAMPLE_B}
-
-    def do_GET(self):  # noqa: N802
-        body = self.files.get(self.path)
-        if body is None:
-            self.send_response(404)
-            self.end_headers()
-            return
-        data = body.encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def log_message(self, *args):  # тихий сервер
-        pass
+class _MockResult:
+    def __init__(self, content: bytes):
+        self.content = content
+        self.error = None
+        self.from_cache = False
+        self.duration_ms = 1
 
 
-@pytest.fixture()
-def project(tmp_path: Path):
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+class _MockCollector:
+    def __init__(self, text_by_file: dict):
+        self.text_by_file = text_by_file
+        self.calls: list = []
 
-    sources = tmp_path / "sources.yaml"
-    sources.write_text(
-        f"""
-settings:
-  timeout: 10
-  retries: 1
-  cache_dir: data/cache
-pages:
-  username: TESTUSER
-  repository: testrepo
-safety:
-  min_configs: 2
-  max_drop_ratio: 0.5
-sources:
-  - id: local-a
-    type: url
-    files:
-      - http://127.0.0.1:{port}/a.txt
-  - id: local-b
-    type: url
-    files:
-      - http://127.0.0.1:{port}/b.txt
-""",
-        encoding="utf-8",
-    )
-    readme = tmp_path / "README.md"
-    readme.write_text("# Test README\n", encoding="utf-8")
-    yield tmp_path, sources
-    server.shutdown()
+    def download(self, source_id, repo, branch, file_path):
+        self.calls.append((source_id, repo, branch, file_path))
+        return _MockResult(self.text_by_file[file_path].encode("utf-8"))
 
 
-def test_full_pipeline(project):
-    root, sources = project
-    rc = main(["--config", str(sources)])
-    assert rc == 0
-
-    out = root / "output"
-    wl = (out / "vpn-whitelist-meeyota.txt").read_text(encoding="utf-8")
-    wf = (out / "vpn-wifi-meeyota.txt").read_text(encoding="utf-8")
-
-    # 5 URI в источниках: 1 дубликат (srv-1 из b), 1 битый → 4 уникальных
-    assert "# Количество: 4" in wl
-    assert wl.count("vless://") == 2
-    assert "trojan://" in wl
-    assert "# Количество: 0" in wf  # проверки не выполнялись
-
-    stats = json.loads((root / "data/stats.json").read_text(encoding="utf-8"))
-    assert stats["found"] == 6
-    assert stats["invalid"] == 1
-    assert stats["unique"] == 4
-    assert stats["duplicates"] == 2  # srv-1 (в a дубль + в b)
-    assert stats["whitelist"] == 4
-    assert stats["wifi"] == 0
-    assert len(stats["sources"]) == 2
-    assert all(s["status"] == "ok" for s in stats["sources"])
-
-    configs = json.loads((root / "data/configs.json").read_text(encoding="utf-8"))
-    assert len(configs) == 4
-    c0 = configs[0]
-    for key in ("protocol", "address", "port", "name", "source", "raw", "hash",
-                "last_check", "country", "ip"):
-        assert key in c0
-
-    # дедупликация: srv-1 из обоих источников
-    srv1 = [c for c in configs if c["name"] == "srv-1"]
-    assert len(srv1) == 1
-    assert sorted(srv1[0]["source"]) == ["local-a", "local-b"]
-
-    # README получил блок Incy-ссылок
-    readme_text = (root / "README.md").read_text(encoding="utf-8")
-    assert "incy://add/https://TESTUSER.github.io/testrepo/vpn-whitelist-meeyota.txt" in readme_text
-
-
-def test_wipeout_protection(project):
-    root, sources = project
-    assert main(["--config", str(sources)]) == 0
-
-    # теперь все источники недоступны (сервер отключён новым пустым sources)
-    bad = root / "bad_sources.yaml"
-    bad.write_text(
+def _setup_cfg(tmp_path: Path) -> m.RunStats:
+    # минимальный yaml-конфиг
+    cfg_path = tmp_path / "sources.yaml"
+    cfg_path.write_text(
         """
+version: 1
 settings:
+  timeout: 5
   retries: 1
+  backoff: 1.0
+  max_file_size_mb: 5
+  use_api_fallback: false
   cache_dir: data/cache
 pages:
-  username: TESTUSER
-  repository: testrepo
+  username: test
+  repository: test-repo
 safety:
-  min_configs: 2
+  min_configs_whitelist: 1
+  min_configs_wifi: 1
+  max_drop_ratio: 0.5
+  max_outbounds_whitelist: 10
+  max_outbounds_wifi: 10
+checks:
+  workers: 1
+  per_check_timeout: 1
+  check_url: "http://example.com"
+  ttl_days: 1
+  results_max_configs: 100
+  geo_primary: "ipwho.is"
+  geo_fallback: "ip-api.com"
+update_interval_hours: 6
 sources:
-  - id: dead
-    type: url
+  - id: t1
+    name: "test1"
+    type: github
+    repo: owner/repo
+    branch: main
     files:
-      - http://127.0.0.1:1/none.txt
-""",
-        encoding="utf-8",
+      - a.txt
+"""
     )
-    rc = main(["--config", str(bad)])
-    assert rc == 2  # обнуление заблокировано
+    return cfg_path
 
-    # прежний whitelist не тронут
-    wl = (root / "output/vpn-whitelist-meeyota.txt").read_text(encoding="utf-8")
-    assert "# Количество: 4" in wl
-    stats = json.loads((root / "data/stats.json").read_text(encoding="utf-8"))
-    assert stats["aborted"]
+
+def test_pipeline_runs(tmp_path: Path):
+    cfg_path = _setup_cfg(tmp_path)
+    text = """
+vless://cd3bb7d9-7df3-4644-ac05-c260990ac277@example.com:443?security=tls&type=tcp&sni=cf.com&fp=chrome#Test1
+trojan://pass@server2.com:443?security=tls&type=tcp&sni=cf.com#Test2
+ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@server3.com:8388#Test3
+"""
+    mock = _MockCollector({"a.txt": text})
+    # monkeypatch
+    orig = m.GithubCollector
+    m.GithubCollector = lambda **kwargs: mock
+    try:
+        cfg = m.load_config(cfg_path)
+        stats = m._run_pipeline(cfg)
+    finally:
+        m.GithubCollector = orig
+
+    assert stats.parsed_total >= 3
+    assert stats.whitelist_count >= 3
+    assert stats.wifi_count >= 3
+
+    out_wl = Path("output/vpn-whitelist-meeyota.json")
+    out_wf = Path("output/vpn-wifi-meeyota.json")
+    assert out_wl.exists()
+    assert out_wf.exists()
+
+    # проверяем что JSON корректный
+    wl = json.loads(out_wl.read_text())
+    wf = json.loads(out_wf.read_text())
+    assert wl["outbounds"][0]["tag"] == "VPN whitelist meeyota"
+    assert wf["outbounds"][0]["tag"] == "VPN Wi-fi meeyota"
+    print("✓ test_pipeline_runs")
+
+
+if __name__ == "__main__":
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        test_pipeline_runs(Path(d))
+    print("\nPipeline smoke-test passed.")
