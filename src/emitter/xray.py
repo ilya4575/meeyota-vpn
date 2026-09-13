@@ -339,14 +339,14 @@ def build_full_xray_config(
         },
         "stats": {},
         "policy": {
-            "levels": [
-                {
+            "levels": {
+                "0": {
                     "handshake": 2,
                     "connIdle": 300,
                     "uplinkOnly": 2,
                     "downlinkOnly": 5,
                 }
-            ]
+            }
         },
     }
 

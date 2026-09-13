@@ -179,6 +179,28 @@ def validate_profile(json_path: Path, expected_name: str) -> None:
     if "stats" in cfg:
         ok("'stats' object present")
 
+    # === policy.levels MUST be a dict {"0": {...}}, never a list ===
+    # Xray-core parses policy.levels as map<uint32, Policy>. A JSON array
+    # fails to unmarshal and breaks the whole config at startup.
+    if "policy" in cfg:
+        levels = cfg["policy"].get("levels")
+        if isinstance(levels, list):
+            fail(
+                "policy.levels is a JSON ARRAY, but Xray-core expects a JSON OBJECT "
+                'mapping level numbers to policies, e.g. {"0": {"handshake": 2, ...}}. '
+                "An array makes Xray-core reject the entire config at startup."
+            )
+        if not isinstance(levels, dict) or not levels:
+            fail("policy.levels must be a non-empty JSON object mapping level numbers to policies")
+        for key in levels:
+            try:
+                num = int(key)
+            except (TypeError, ValueError):
+                fail(f"policy.levels has non-numeric key {key!r} — keys must be uint32 level numbers as strings")
+            if not 0 <= num <= 4294967295:
+                fail(f"policy.levels key {key!r} is out of uint32 range")
+        ok(f"policy.levels is a dict with level keys {sorted(levels)!r} (valid for Xray-core)")
+
     print(f"\n✅ {json_path.name} is structurally valid for Incy as a SINGLE full Xray config profile\n")
 
 

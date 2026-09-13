@@ -157,6 +157,8 @@
   },
   "stats": {},
   "policy": {
-    "levels": [{"handshake": 2, "connIdle": 300, "uplinkOnly": 2, "downlinkOnly": 5}]
+    "levels": {
+      "0": {"handshake": 2, "connIdle": 300, "uplinkOnly": 2, "downlinkOnly": 5}
+    }
   }
 }
